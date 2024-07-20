@@ -1,0 +1,22 @@
+{
+  "name": "sniper-bot",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "@bloxroute/solana-trader-client-ts": "^2.1.6",
+    "@solana/web3.js": "^1.95.0",
+    "axios": "^1.7.2",
+    "bs58": "^6.0.0",
+    "esrun": "^3.2.26",
+    "events": "^3.3.0",
+    "fs": "^0.0.1-security",
+    "node-fetch": "^3.3.2"
+  }
+}
