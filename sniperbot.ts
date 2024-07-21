@@ -2,7 +2,6 @@ import { HttpProvider, MAINNET_API_NY_HTTP, signTx } from "@bloxroute/solana-tra
 import fs from "fs";
 import config from "./config";
 import { Connection, LAMPORTS_PER_SOL, PublicKey } from "@solana/web3.js";
-import axios from "axios";
 
 
 const RAYDIUM = new PublicKey(config.RAYDIUM_PUBLIC_KEY)
@@ -21,9 +20,9 @@ const provider = new HttpProvider(
 
 const wallet = config.PUBLIC_KEY;
 const inAmount = 0.0001 * LAMPORTS_PER_SOL;
-const slippage = 0.00005 * LAMPORTS_PER_SOL;
+const slippage = inAmount * 0.005 / LAMPORTS_PER_SOL;
 const solToken = "So11111111111111111111111111111111111111112";
-const tip = "0.002";
+const tip = "0.005";
 
 interface Token {
     symbol: string;
@@ -106,50 +105,58 @@ const fetchRaydiumMints = async (txId: string): Promise<{ tokenAAccount: PublicK
     }
 }
 
-const fetchQuote = async (inToken: string, outToken: string, amount: number) => {
+const fetchCurrentPrice = async (symbol: string): Promise<number> => {
     try {
         const request = await provider.getRaydiumQuotes({
-            inToken: inToken,
-            outToken: outToken,
-            inAmount: amount,
+            inToken: symbol,
+            outToken: solToken,
+            inAmount: inAmount,
             slippage: slippage,
         });
-        console.log("✅ Trade Quote Fetched:", request);
+        if (request.routes.length === 0) {
+            console.error(`❌ No trading route found for token ${symbol}`);
+            return 0;
+        }
+        const price = request.routes[0].outAmount / inAmount;
+        console.log(`✅ Current market price of ${symbol}: ${price}`);
+        return price;
     } catch (error) {
-        console.error("❌ Error occured while fetching quote", error);
+        console.error(`❌ Error fetching price for token ${symbol}:`, error);
+        return 0;
     }
 }
 
 const buyOrder = async (symbol: string, amount: number) => {
     console.log("🤖 Placing buy order for token", symbol);
-    
-    if (symbol === solToken) {
-        return null;
-    } else {
-        try {
-            const order = await provider.submitTradeSwap({
-                ownerAddress: wallet,
-                inToken: solToken,
-                outToken: symbol,
-                inAmount: amount,
-                slippage: slippage,
-                project: "P_RAYDIUM",
-                computeLimit: 1000,
-                computePrice: "2000",
-                // tip: tip
-            }, "P_SUBMIT_ALL", true);
+    try {
+        const price = await fetchCurrentPrice(symbol);
+        if (price === 0) {
+            console.error(`❌ Cannot place buy order. No trading route for token ${symbol}.`);
+            return null;
 
-            for (const tx of order.transactions) {
-                const signature = tx.signature;
-                console.log(`✅ Buy Order placed successfully\nSignature: https://explorer.solana.com/tx/${signature}`);
-            }
-
-            logTransaction(order)
-
-            return order;
-        } catch (error) {
-            console.error("❌ Error while occurred placing buy order:", error);
         }
+        const order = await provider.submitTradeSwap({
+            ownerAddress: wallet,
+            inToken: solToken,
+            outToken: symbol,
+            inAmount: amount,
+            slippage: slippage,
+            project: "P_RAYDIUM",
+            computeLimit: 1000,
+            computePrice: "2000",
+            // tip: tip
+        }, "P_SUBMIT_ALL", true);
+
+        for (const tx of order.transactions) {
+            const signature = tx.signature;
+            console.log(`✅ Buy Order placed successfully\nSignature: https://explorer.solana.com/tx/${signature}`);
+        }
+
+        logTransaction(order)
+        return order;
+    } catch (error) {
+        console.error(`❌ Error placing buy order for ${symbol}:`, error);
+        return null;
     }
 }
 
@@ -185,47 +192,20 @@ const sellOrder = async (symbol: string, amount: number) => {
     }
 }
 
-const fetchCurrentPrice = async (symbol: string): Promise<number> => {
-    while (true) {
-        try {
-            const quote = await provider.getRaydiumQuotes({
-                inToken: solToken,
-                outToken: symbol,
-                inAmount: inAmount,
-                slippage: slippage,
-            });
-            const price = quote.routes[0].outAmount;
-            return price;
-        } catch(error) {
-            console.error("❌ Error fetching current price");
-            throw error;
-        }
-    }
-}
-
-// const fetchCurrentPrice = async (symbol: string): Promise<number> => {
-//     const res = await provider.getRaydiumPrices({ tokens: [symbol] });
-//     return res.tokenPrices
-// }
-
 const handleNewPool = async (tokenAAccount: PublicKey, tokenBAccount: PublicKey) => {
-    const outToken = tokenAAccount.toBase58();
-    const inToken = tokenBAccount.toBase58();
+    const tokenASymbol = tokenAAccount.toBase58();
+    const tokenBSymbol = tokenBAccount.toBase58();
 
-    if (!portfolio[outToken]) {
-        await buyOrder(outToken, inAmount);
-        portfolio[outToken] = { symbol: outToken, amount: inAmount, price: await fetchCurrentPrice(outToken) };
+    console.log(`✅ Handling new pool. Token A: ${tokenASymbol}, Token B: ${tokenBSymbol}`); 
+
+    if (!portfolio[tokenASymbol]) {
+        await buyOrder(tokenASymbol, inAmount);
+        portfolio[tokenASymbol] = { symbol: tokenASymbol, amount: inAmount, price: await fetchCurrentPrice(tokenASymbol) };
     }
 
-    if (!portfolio[inToken]) {
-        await buyOrder(inToken, inAmount);
-        portfolio[inToken] = {symbol: inToken, amount: inAmount, price: await fetchCurrentPrice(outToken)};
-    }
-
-    // if (outToken === solToken) {
-    //     return null;
-    // } else {
-    //     fetchQuote(inToken, outToken, inAmount);
+    // if (!portfolio[tokenBSymbol]) {
+    //     await buyOrder(tokenBSymbol, inAmount);
+    //     portfolio[tokenBSymbol] = {symbol: tokenBSymbol, amount: inAmount, price: await fetchCurrentPrice(tokenBSymbol)};
     // }
 
     savePortfolio();
@@ -245,6 +225,10 @@ const monitorPortfolio = async () => {
         if (token.amount === 0) {
             delete portfolio[symbol];
         }
+
+        if (token.symbol === solToken) {
+            delete portfolio[symbol];
+        }
     }
 
     savePortfolio();
@@ -257,4 +241,3 @@ const startBot = async () => {
 }
 
 startBot().catch(console.error); 
-
