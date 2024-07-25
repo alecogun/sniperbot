@@ -1,7 +1,9 @@
-import { HttpProvider, MAINNET_API_NY_HTTP, signTx } from "@bloxroute/solana-trader-client-ts";
+import { createTraderAPIMemoInstruction, HttpProvider, MAINNET_API_NY_HTTP } from "@bloxroute/solana-trader-client-ts";
 import fs from "fs";
 import config from "./config";
-import { Connection, LAMPORTS_PER_SOL, PublicKey } from "@solana/web3.js";
+import { Connection, LAMPORTS_PER_SOL, PublicKey, Keypair } from "@solana/web3.js";
+import base58 from "bs58"
+import { Transaction } from "@solana/web3.js";
 
 
 const RAYDIUM = new PublicKey(config.RAYDIUM_PUBLIC_KEY)
@@ -18,11 +20,15 @@ const provider = new HttpProvider(
     MAINNET_API_NY_HTTP,
 );
 
+
+
 const wallet = config.PUBLIC_KEY;
 const inAmount = 0.0001 * LAMPORTS_PER_SOL;
-const slippage = inAmount * 0.005 / LAMPORTS_PER_SOL;
+const slippage = 0.5;
 const solToken = "So11111111111111111111111111111111111111112";
-const tip = "0.005";
+const computeLimit = 10000;
+const computePrice = "2000"
+const tip = "5000000";
 
 interface Token {
     symbol: string;
@@ -108,8 +114,8 @@ const fetchRaydiumMints = async (txId: string): Promise<{ tokenAAccount: PublicK
 const fetchCurrentPrice = async (symbol: string): Promise<number> => {
     try {
         const request = await provider.getRaydiumQuotes({
-            inToken: symbol,
-            outToken: solToken,
+            inToken: solToken,
+            outToken: symbol,
             inAmount: inAmount,
             slippage: slippage,
         });
@@ -117,8 +123,8 @@ const fetchCurrentPrice = async (symbol: string): Promise<number> => {
             console.error(`❌ No trading route found for token ${symbol}`);
             return 0;
         }
-        const price = request.routes[0].outAmount / inAmount;
-        console.log(`✅ Current market price of ${symbol}: ${price}`);
+        const price = inAmount / request.routes[0].outAmount;
+        console.log(`🤖 Current market price of ${symbol}: ${price}`);
         return price;
     } catch (error) {
         console.error(`❌ Error fetching price for token ${symbol}:`, error);
@@ -133,7 +139,6 @@ const buyOrder = async (symbol: string, amount: number) => {
         if (price === 0) {
             console.error(`❌ Cannot place buy order. No trading route for token ${symbol}.`);
             return null;
-
         }
         const order = await provider.submitTradeSwap({
             ownerAddress: wallet,
@@ -142,17 +147,38 @@ const buyOrder = async (symbol: string, amount: number) => {
             inAmount: amount,
             slippage: slippage,
             project: "P_RAYDIUM",
-            computeLimit: 1000,
-            computePrice: "2000",
+            computeLimit: computeLimit,
+            computePrice: computePrice,
             // tip: tip
         }, "P_SUBMIT_ALL", true);
 
-        for (const tx of order.transactions) {
-            const signature = tx.signature;
-            console.log(`✅ Buy Order placed successfully\nSignature: https://explorer.solana.com/tx/${signature}`);
-        }
+        const keypair = Keypair.fromSecretKey(base58.decode(config.PRIVATE_KEY));
+        const memo = createTraderAPIMemoInstruction("");
+        const latestBlockhash = await provider.getRecentBlockHash({});
 
-        logTransaction(order)
+        let transaction = new Transaction({
+            recentBlockhash: latestBlockhash.blockHash,
+            feePayer: keypair.publicKey,
+        })
+
+        transaction = transaction.add(memo);
+
+        transaction.sign(keypair);
+        const serializeTxBytes = transaction.serialize();
+        const buff = Buffer.from(serializeTxBytes);
+        const encodedTxn = buff.toString("base64");
+        const response = await provider.postSubmit({
+            transaction: { content: encodedTxn, isCleanup: false },
+            skipPreFlight: false
+        })
+
+        if (response.signature) {
+            console.log('✅ Transaction Submitted successfully')
+            console.log('✅ Transaction Signature:', response.signature)
+            console.log(`✅ Buy Order placed successfully\nSignature: https://explorer.solana.com/tx/${response.signature}`)
+        } 
+
+        logTransaction(order);
         return order;
     } catch (error) {
         console.error(`❌ Error placing buy order for ${symbol}:`, error);
@@ -172,17 +198,38 @@ const sellOrder = async (symbol: string, amount: number) => {
                 inAmount: amount,
                 slippage: slippage,
                 project: "P_RAYDIUM",
-                computeLimit: 1000,
-                computePrice: "2000",
-                // tip: tip
+                computeLimit: computeLimit,
+                computePrice: computePrice,
+                tip: tip
             }, "P_SUBMIT_ALL", true);
 
-            for (const tx of order.transactions) {
-                const signature = tx.signature;
-                console.log(`✅ Sell Order placed successfully\nSignature: https://explorer.solana.com/tx/${signature}`);
-
-                logTransaction(order);
-            }
+            const keypair = Keypair.fromSecretKey(base58.decode(config.PRIVATE_KEY));
+            const memo = createTraderAPIMemoInstruction("");
+            const latestBlockhash = await provider.getRecentBlockHash({});
+    
+            let transaction = new Transaction({
+                recentBlockhash: latestBlockhash.blockHash,
+                feePayer: keypair.publicKey,
+            })
+    
+            transaction = transaction.add(memo);
+    
+            transaction.sign(keypair);
+            const serializeTxBytes = transaction.serialize();
+            const buff = Buffer.from(serializeTxBytes);
+            const encodedTxn = buff.toString("base64");
+            const response = await provider.postSubmit({
+                transaction: { content: encodedTxn, isCleanup: false },
+                skipPreFlight: false
+            })
+    
+            if (response.signature) {
+                console.log('✅ Transaction Submitted successfully')
+                console.log('✅ Transaction Signature:', response.signature)
+                console.log(`✅ Sell Order placed successfully\nSignature: https://explorer.solana.com/tx/${response.signature}`)
+            } 
+    
+            logTransaction(order);
             return order;
         } catch (error) {
             console.error("❌ Error while occurred placing buy order:", error);
@@ -203,10 +250,10 @@ const handleNewPool = async (tokenAAccount: PublicKey, tokenBAccount: PublicKey)
         portfolio[tokenASymbol] = { symbol: tokenASymbol, amount: inAmount, price: await fetchCurrentPrice(tokenASymbol) };
     }
 
-    // if (!portfolio[tokenBSymbol]) {
-    //     await buyOrder(tokenBSymbol, inAmount);
-    //     portfolio[tokenBSymbol] = {symbol: tokenBSymbol, amount: inAmount, price: await fetchCurrentPrice(tokenBSymbol)};
-    // }
+    if (!portfolio[tokenBSymbol]) {
+        await buyOrder(tokenBSymbol, inAmount);
+        portfolio[tokenBSymbol] = {symbol: tokenBSymbol, amount: inAmount, price: await fetchCurrentPrice(tokenBSymbol)};
+    }
 
     savePortfolio();
 }
